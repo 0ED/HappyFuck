@@ -1,0 +1,28 @@
+# Object files
+*.pyc
+*.class
+*.o
+*.ko
+
+# Libraries
+*.lib
+*.a
+
+# Shared objects (inc. Windows DLLs)
+*.dll
+*.so
+*.so.*
+*.dylib
+
+# Executables
+*.exe
+*.out
+*.app
+
+# DS_Store
+.DS_Store
+
+# Special
+*.tab.c
+*.tab.h
+*.yy.c
